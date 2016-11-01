@@ -19,7 +19,7 @@ import           Control.Monad
 --import qualified Data.Array as Array
 --import           Data.Array.MArray(newListArray)
 --import           Data.Array.ST (STArray, runSTArray)
-import           Data.Aeson (ToJSON(..), FromJSON(..), withText)
+import           Data.Aeson (ToJSON(..), FromJSON(..), Value, withText)
 import Data.Aeson.TH as A
 import           Data.Bool
 import           Data.Char (toLower)
@@ -113,8 +113,6 @@ data DomRect = DomRect
   , _rectRight :: Double
   , _rectTop :: Double
   , _rectWidth :: Double
-  , _rectX :: Double
-  , _rectY :: Double
   } deriving (Eq, Generic, Show)
 makeLenses ''DomRect
 
@@ -125,8 +123,8 @@ instance FromJSVal DomRect
 instance HasEvent "click" DomRect where
   parseEvent _ = do
     target <- getTarget
-    (Just result) <- applyFunction target "getBoundingClientRect" ([]::[Int])
-    pure (result :: DomRect)
+    (Just result) <- applyFunction target "getBoundingClientRect" ([]::[Value])
+    pure result
 
 data Model
   = Model { _adts       :: [Decl SrcSpanInfo]
