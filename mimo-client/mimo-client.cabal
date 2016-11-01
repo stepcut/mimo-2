@@ -1,6 +1,6 @@
 name:                mimo-client
 version:             0.1.0.0
-license:             BSD3
+license:             AllRightsReserved
 license-file:        LICENSE
 author:              Jeremy Shaw
 maintainer:          jeremy@n-heptane.com
