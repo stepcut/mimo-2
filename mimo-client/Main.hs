@@ -118,7 +118,7 @@ data DomRect = DomRect
   } deriving (Eq, Generic, Show)
 makeLenses ''DomRect
 
-deriveJSON A.defaultOptions { fieldLabelModifier = drop 5, constructorTagModifier = map toLower } ''DomRect
+deriveJSON A.defaultOptions { fieldLabelModifier = map toLower . drop 5 } ''DomRect
 instance ToJSVal DomRect
 instance FromJSVal DomRect
 
