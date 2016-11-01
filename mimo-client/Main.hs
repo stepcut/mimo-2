@@ -22,10 +22,12 @@ import           Control.Monad
 import           Data.Aeson (ToJSON(..), FromJSON(..), Value, withText)
 import Data.Aeson.TH as A
 import           Data.Bool
-import           Data.Char (toLower)
+import           Data.Char (toLower, chr)
 import           Data.Foldable (toList)
+import           Data.Maybe (catMaybes)
 import           Data.Monoid
 import           Data.Proxy (Proxy(..))
+import           Data.JSString.Text (textToJSString)
 import           Data.Text     (Text)
 import qualified Data.Text     as T
 import           Data.Map (Map)
@@ -58,7 +60,7 @@ import           Language.Haskell.Exts.ExactPrint (exactPrint)
 import           Language.Haskell.Exts.SrcLoc     (SrcLoc(..),SrcSpanInfo(..))
 import           Language.Haskell.Exts.Syntax     (Decl(..))
 import           Language.Haskell.HSX.QQ (hsx)
-import           Miso          hiding (update)
+import           Miso          as Miso hiding (update)
 import           Miso.Html.Types.Event hiding (Action)
 -- import           Miso.Html (Attribute(..), View, HasEvent(..), getField, getEventField, getTarget, mkNodeHtml, on, onClick, onInput, text_)
 --import           Miso.HSX
@@ -86,8 +88,8 @@ instance AsChild action String where
 instance AsChild action MisoString where
   asChild t = [ text t ]
 
---instance AsChild action [Char] where
---   asChild s = [ text (T.pack s) ]
+instance AsChild action T.Text where
+  asChild t = [ text $ textToJSString t ]
 
 instance (action ~ action') => AsChild action (View action') where
   asChild v = [v]
@@ -120,18 +122,32 @@ deriveJSON A.defaultOptions { fieldLabelModifier = map toLower . drop 5 } ''DomR
 instance ToJSVal DomRect
 instance FromJSVal DomRect
 
-instance HasEvent "click" DomRect where
+instance HasEvent "click" ((Double, Double), DomRect) where
   parseEvent _ = do
     target <- getTarget
+    (Just x) <- getEventField "x"
+    (Just y) <- getEventField "y"
     (Just result) <- applyFunction target "getBoundingClientRect" ([]::[Value])
-    pure result
+    pure ((x,y), result)
 
-data Model
-  = Model { _adts       :: [Decl SrcSpanInfo]
-          , _newADT     :: T.Text
-          , _parseError :: Maybe String
-          , _editorPos  :: Maybe DomRect
-          }
+data FontMetric = FontMetric
+  { _fmWidth :: Double
+  , _fwHeight :: Double
+  }
+  deriving (Eq, Show, Generic)
+
+{-
+instance HasEvent "input" MonospaceText where
+  parseEvent _ = do
+    pure Nothing
+-}
+
+data Model = Model
+  { _adts       :: [Decl SrcSpanInfo]
+  , newADT      :: Maybe T.Text
+  , _parseError :: Maybe String
+  , _editorPos  :: Maybe ((Double, Double), DomRect)
+  }
   deriving Eq
 
 makeLenses ''Model
@@ -144,9 +160,10 @@ initialModel = Model
   }
 
 data Action
-  = UpdateADT T.Text
+  = UpdateADT Int
+  | HandleKeyDown EditorKey
   | SubmitADT
-  | EditorPos DomRect
+  | EditorPos ((Double, Double), DomRect)
     deriving (Show, Generic)
 
 instance ToJSVal Action
@@ -156,8 +173,11 @@ update' :: Action -> Model -> Effect Action Model
 update' action model =
   case action of
     EditorPos dr -> noEff $ model & editorPos .~ Just dr
-    UpdateADT t -> noEff $ model & newADT .~ t
-    SubmitADT ->
+    UpdateADT t  -> noEff $ model & newADT %~ (\t' -> t' <> T.pack [chr t])
+    HandleKeyDown (EditorKey i)
+      | i == 8 -> noEff $ model & newADT %~ T.init
+      | otherwise -> noEff model
+    SubmitADT    ->
       case parseDecl (model ^. newADT ^. to T.unpack) of
         ParseOk a ->
           noEff $ model & newADT .~ ""
@@ -167,7 +187,29 @@ update' action model =
           noEff $ model & parseError .~ (Just err)
 
 showADT :: Decl SrcSpanInfo -> View Action
-showADT t = [hsx| <pre><code class="item"><% exactPrint t [] %></code></pre> |]
+showADT t = [hsx| <pre class="ui segment"><code class="item"><% exactPrint t [] %></code></pre> |]
+
+-- colorize =
+
+newtype EditorKey = EditorKey { unEditorKey :: Int }
+ deriving (Eq, Show, Generic)
+instance ToJSVal EditorKey
+instance FromJSVal EditorKey
+
+instance HasEvent "keydown" EditorKey where
+  parseEvent _  = do
+    do i <- keyGrammar
+--       when (i == 8) preventDefault
+       pure (EditorKey i)
+         where
+           -- | Retrieves either "keyCode", "which" or "charCode" field in `Grammar`
+           keyGrammar :: Grammar Int
+           keyGrammar = do
+             keyCode <- getEventField "keyCode"
+             which <- getEventField "which"
+             charCode <- getEventField "charCode"
+             pure $ head $ catMaybes [ keyCode, which, charCode ]
+
 
 adtInput :: Model
          -> View Action
@@ -175,16 +217,30 @@ adtInput model =
   [hsx|
     <div>
      <div><% show $ model ^. parseError %></div>
-     <div class="ui right labeled fluid input">
+--         <div class="ui right labeled fluid input">
+     <div class="ui segment" style="font-family: monospace;" tabindex="1"
+       [ on click EditorPos
+-- , onWithOptions (Miso.Options False True) keydown HandleKeyDown
+       , on keydown HandleKeyDown
+       , onKeyPress UpdateADT
+       , prop "value" (model ^. newADT)]><% model ^. newADT %></div>
+{-
       <textarea cols="80" rows="5" style="font-family: monospace;" placeholder="Enter a new data type"
-        [on click $ \dr -> EditorPos dr, onInput $ UpdateADT, prop "value" (model ^. newADT)]></textarea>
+        [ on click EditorPos
+        , onInput UpdateADT
+        , prop "value" (model ^. newADT)]></textarea>
+        -}
       <a class="ui tag label" [onClick SubmitADT]>Add ADT</a>
-     </div>
+--     </div>
     </div>
   |]
   where
+    input :: Proxy "input"
+    input = Proxy
     click :: Proxy "click"
     click = Proxy
+    keydown :: Proxy "keydown"
+    keydown = Proxy
 
 viewAdts :: Model
          -> View Action
@@ -200,8 +256,10 @@ view' :: Model -> View Action
 view' model = [hsx|
   <div class="ui container">
     <h1 class="ui header">Algebraic Data Types</h1>
-    <% adtInput model %>
-    <% viewAdts model %>
+    <div class="ui segments">
+     <% adtInput model %>
+     <% map showADT (model ^. adts) %>
+    </div>
     <% show $ model ^. editorPos %>
   </div>
   |]
@@ -209,3 +267,16 @@ view' model = [hsx|
 main :: IO ()
 main =
   do startApp initialModel view' update' defaultSettings
+
+{-
+keyMapSignal :: IO (Signal (M.Map Char Int))
+keyMapSignal = do
+   (source, sink) <- signal
+   document.addEventListener "load" $ do
+       map <- constructKeyMap
+       sink map
+```
+
+[2:20]  
+then add it to `extraSignals`
+-}
