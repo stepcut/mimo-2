@@ -144,7 +144,7 @@ instance HasEvent "input" MonospaceText where
 
 data Model = Model
   { _adts       :: [Decl SrcSpanInfo]
-  , newADT      :: Maybe T.Text
+  , _newADT     :: T.Text
   , _parseError :: Maybe String
   , _editorPos  :: Maybe ((Double, Double), DomRect)
   }
