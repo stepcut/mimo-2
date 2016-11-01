@@ -22,6 +22,7 @@ import           Control.Monad
 import           Data.Aeson (ToJSON(..), FromJSON(..), withText)
 import Data.Aeson.TH as A
 import           Data.Bool
+import           Data.Char (toLower)
 import           Data.Foldable (toList)
 import           Data.Monoid
 import           Data.Proxy (Proxy(..))
@@ -117,7 +118,7 @@ data DomRect = DomRect
   } deriving (Eq, Generic, Show)
 makeLenses ''DomRect
 
-deriveJSON A.defaultOptions { fieldLabelModifier = drop 5 } ''DomRect
+deriveJSON A.defaultOptions { fieldLabelModifier = drop 5, constructorTagModifier = map toLower } ''DomRect
 instance ToJSVal DomRect
 instance FromJSVal DomRect
 
