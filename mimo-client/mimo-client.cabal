@@ -1,0 +1,24 @@
+name:                mimo-client
+version:             0.1.0.0
+license:             BSD3
+license-file:        LICENSE
+author:              Jeremy Shaw
+maintainer:          jeremy@n-heptane.com
+category:            Web
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+executable mimo-client
+  Main-is:             Main.hs
+  build-depends:       aeson,
+                       base >=4.8 && <4.10,
+                       containers,
+                       haskell-src-exts,
+                       hsx2hs,
+                       ghcjs-base,
+                       ghcjs-dom,
+                       lens,
+                       miso,
+                       text
+  default-language:    Haskell2010
