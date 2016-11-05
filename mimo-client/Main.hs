@@ -10,15 +10,13 @@
 {-# LANGUAGE OverlappingInstances #-}
 {-# language OverloadedStrings #-}
 {-# language DataKinds #-}
+{-# language DeriveDataTypeable #-}
 module Main where
 
-import           Control.Lens
+import           Control.Lens ((&), (^.), (.~), (%~), makeLenses, to)
 import           Control.Lens.At (at)
 import           Control.Monad
---import           Data.Array (Array, Ix(..))
---import qualified Data.Array as Array
---import           Data.Array.MArray(newListArray)
---import           Data.Array.ST (STArray, runSTArray)
+import           Data.Data (Data, Typeable)
 import           Data.Aeson (ToJSON(..), FromJSON(..), Value, withText)
 import Data.Aeson.TH as A
 import           Data.Bool
@@ -65,9 +63,58 @@ import           Miso.Html.Types.Event hiding (Action)
 -- import           Miso.Html (Attribute(..), View, HasEvent(..), getField, getEventField, getTarget, mkNodeHtml, on, onClick, onInput, text_)
 --import           Miso.HSX
 --import           Miso.Html     (VTree, Attribute(..), Event(OnClick))
-import           Prelude       hiding (div, span, id)
+-- import           Prelude       hiding (div, span, id)
 -- import           Types         (Update(..), MonthFlag(..))
 
+-- * copied from relatable until we build relatable for ghcjs
+
+data Index ty = Index { _index :: Int } | Auto
+  deriving (Read, Show, Eq, Ord, Data, Typeable, Generic)
+
+instance ToJSVal (Index ty)
+instance FromJSVal (Index ty)
+
+index :: Functor f => (Int -> f Int) -> Index t -> f (Index t)
+index f (Index i) = fmap Index (f i)
+
+incr :: Index t -> Index t
+incr (Index i) = Index (succ i)
+
+class Indexed a where
+  idLens :: Functor f => ((Index a) -> f (Index a)) -> a -> f a
+
+data Collection a = Collection
+     { _nextIndex  :: Index a
+     , _collection :: Map (Index a) a
+     }
+     deriving (Show, Eq, Ord, Data, Typeable)
+makeLenses ''Collection
+
+
+emptyCollection :: (Indexed a) => Collection a
+emptyCollection =
+  (Collection { _nextIndex = (Index 1)
+              , _collection = Map.empty
+              })
+
+lookupC :: Index a
+       -> Collection a
+       -> Maybe a
+lookupC i c = Map.lookup i (_collection c)
+
+insertC :: (Indexed a) => a -> Collection a -> (a, Collection a)
+insertC a (Collection ni c) =
+  case a ^. idLens of
+    Auto ->
+      let a' = a & idLens .~ ni
+          ni' = incr ni
+      in (a', Collection ni' (Map.insert ni a' c))
+
+
+class (Indexed c) => HasCollection st c where
+  colLens :: Functor f => ((Collection c) -> f (Collection c)) -> st -> f st
+
+-- * Move to Miso.Html.HSX
 
 genElement :: (Maybe MisoString, MisoString) -> [ Attribute action ] -> [[ View action ]] -> View action
 genElement (Just d, t) _attrs _children  = Prelude.error $ "elements with a domain not supported: " ++ show (d, t)
@@ -142,9 +189,22 @@ instance HasEvent "input" MonospaceText where
     pure Nothing
 -}
 
+data ADT = ADT
+  { _adtIndex :: Index ADT
+  , _adtValue :: Either T.Text (Decl SrcSpanInfo)
+  }
+  deriving (Eq, Show, Generic)
+makeLenses ''ADT
+
+
+instance Indexed ADT where
+  idLens = adtIndex
+
 data Model = Model
-  { _adts       :: [Decl SrcSpanInfo]
+  { _adts       :: Collection ADT
   , _newADT     :: T.Text
+  , _editADT    :: Maybe (Index ADT)
+--  , _nextIndex  :: Index ADT
   , _parseError :: Maybe String
   , _editorPos  :: Maybe ((Double, Double), DomRect)
   }
@@ -153,8 +213,10 @@ data Model = Model
 makeLenses ''Model
 
 initialModel = Model
-  { _adts = [ ]
+  { _adts = emptyCollection
   , _newADT = ""
+  , _editADT = Nothing
+--  , _nextIndex = Index 0
   , _parseError = Nothing
   , _editorPos = Nothing
   }
@@ -162,7 +224,8 @@ initialModel = Model
 data Action
   = UpdateADT Int
   | HandleKeyDown EditorKey
-  | SubmitADT
+  | SubmitADT (Index ADT)
+  | EditADT (Index ADT)
   | EditorPos ((Double, Double), DomRect)
     deriving (Show, Generic)
 
@@ -173,21 +236,33 @@ update' :: Action -> Model -> Effect Action Model
 update' action model =
   case action of
     EditorPos dr -> noEff $ model & editorPos .~ Just dr
+    EditADT i -> noEff $ model & editADT .~ Just i
     UpdateADT t  -> noEff $ model & newADT %~ (\t' -> t' <> T.pack [chr t])
     HandleKeyDown (EditorKey i)
       | i == 8 -> noEff $ model & newADT %~ T.init
       | otherwise -> noEff model
-    SubmitADT    ->
+    SubmitADT i    ->
       case parseDecl (model ^. newADT ^. to T.unpack) of
         ParseOk a ->
-          noEff $ model & newADT .~ ""
-                        & adts %~ (\l -> l ++ [a])
-                        & parseError .~ Nothing
+              noEff $ model & newADT .~ ""
+                            & adts %~ (\c -> snd $ insertC (ADT i (Right a)) c)
+                            & parseError .~ Nothing
         ParseFailed sl err ->
           noEff $ model & parseError .~ (Just err)
 
-showADT :: Decl SrcSpanInfo -> View Action
-showADT t = [hsx| <pre class="ui segment"><code class="item"><% exactPrint t [] %></code></pre> |]
+showADT :: Model -> ADT -> View Action
+showADT model adt
+  | model ^. editADT == Just (adt ^. adtIndex) =
+        adtInput model (Just adt)
+  | otherwise =
+    case adt ^. adtValue of
+      (Right decl) ->
+        [hsx|
+            <pre class="ui segment" [onDoubleClick (EditADT $ adt ^. adtIndex)]><code class="item"><% exactPrint decl [] %></code></pre>
+        |]
+  where
+    doubleclick :: Proxy "doubleclick"
+    doubleclick = Proxy
 
 -- colorize =
 
@@ -212,25 +287,24 @@ instance HasEvent "keydown" EditorKey where
 
 
 adtInput :: Model
+         -> Maybe ADT
          -> View Action
-adtInput model =
+adtInput model madt =
+  let index = case madt of Nothing -> Auto ; (Just adt) -> adt ^. adtIndex
+  in
   [hsx|
     <div>
-     <div><% show $ model ^. parseError %></div>
+     <div><% case model ^. parseError of
+               Nothing -> ""
+               (Just e) -> e %></div>
 --         <div class="ui right labeled fluid input">
      <div class="ui segment" style="font-family: monospace;" tabindex="1"
        [ on click EditorPos
--- , onWithOptions (Miso.Options False True) keydown HandleKeyDown
        , on keydown HandleKeyDown
        , onKeyPress UpdateADT
+       , onBlur (SubmitADT index)
        , prop "value" (model ^. newADT)]><% model ^. newADT %></div>
-{-
-      <textarea cols="80" rows="5" style="font-family: monospace;" placeholder="Enter a new data type"
-        [ on click EditorPos
-        , onInput UpdateADT
-        , prop "value" (model ^. newADT)]></textarea>
-        -}
-      <a class="ui tag label" [onClick SubmitADT]>Add ADT</a>
+--      <a class="ui tag label" [onClick (SubmitADT $ Auto)]>Add ADT</a>
 --     </div>
     </div>
   |]
@@ -247,18 +321,17 @@ viewAdts :: Model
 viewAdts model =
   [hsx|
     <div class="ui list">
-     <% map showADT (model ^. adts) %>
+     <% map (showADT model) (model ^. adts ^. collection ^. to Map.elems) %>
     </div>
   |]
-
 
 view' :: Model -> View Action
 view' model = [hsx|
   <div class="ui container">
     <h1 class="ui header">Algebraic Data Types</h1>
     <div class="ui segments">
-     <% adtInput model %>
-     <% map showADT (model ^. adts) %>
+     <% adtInput model Nothing %>
+     <% map (showADT model) (model ^. adts  ^. collection ^. to Map.elems) %>
     </div>
     <% show $ model ^. editorPos %>
   </div>
